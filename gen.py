@@ -7,6 +7,7 @@ usage = '''Usage: {} INPUTBIN OUTFILE
 produces PROM implementation from given binary data
 '''
 
+trans = 0
 @contextmanager
 def new_subckt(name, arity, extra=None):
   # we start numbering of input nodes from 1, since zero is GND
@@ -38,8 +39,8 @@ def gen_t_and(name, arity):
       ox = "z{}".format(x)
     x = 1
     print "MN{} {} {} 0 0 NMOS".format(x, ox, x)
-    print ".model nmos nmos level=54 version=4.6.5"
-    print ".model pmos pmos level=54 version=4.6.5"
+    print ".model nmos pmos level=54 version=4.7"
+    print ".model pmos nmos level=54 version=4.7"
 
 
 def gen_inv():
@@ -47,8 +48,8 @@ def gen_inv():
     print "* THIS WILL BE CMOS INVERTOR"
     print "MP vdd 1 2 2 PMOS"
     print "MN   2 1 0 0 NMOS"
-    print ".model nmos nmos level=54 version=4.6.5"
-    print ".model pmos pmos level=54 version=4.6.5"
+    print ".model nmos nmos level=54 version=4.7"
+    print ".model pmos pmos level=54 version=4.7"
 
 def gen_buf():
   with new_subckt('BUF', 2):
@@ -58,21 +59,27 @@ def gen_buf():
 
 xinvid=1
 def xinv(inp, outp):
+  global trans
   global xinvid
   print('XINV{} {} {} VDD INV'.format(xinvid, inp, outp))
   xinvid = xinvid + 1
+  trans += 2
 
 xbufid=1
 def xbuf(inp, outp):
   global xbufid
+  global trans
   print('XBUF{} {} {} VDD BUF'.format(xbufid, inp, outp))
   xbufid = xbufid + 1
+  trans += 4
 
 xandid=1
 def xand(input_arity, inps, outp):
   global xandid
+  global trans
   print('XAND{} {} {} VDD AND{}'.format(xandid, ' '.join(inps), outp, input_arity))
   xandid = xandid + 1
+  trans += 2*input_arity
 
 def gen_and_matcher(d, ident, and_name, bitlen, inps, outps):
   # input data, identifier, and model name, its input len in bits
@@ -122,11 +129,14 @@ def gen_ors(data, bitlen):
     if _i & 0b00110 == 0b00110: print>>sys.stderr, _i, 'of', dl, '\r ',
     for bidx, bit in enumerate(bits):
       if bit == '1':
-        print 'Dor{} AND{}out BUF{}in 1N4148'.format(idx, idx, bidx)
+        print 'Dor{} AND{}out BUF{}in 1N4148'.format(idx, _i, bidx)
         idx = idx + 1
 
-  for x in range(bitlen):
-    print 'XoBUF{} BUF{}in PROMout{} VDD BUF'.format(x, x, x)
+  for x in map(str, range(bitlen)):
+    print 'Rbuf{} BUF{}in 0 250k'.format(x, x)
+    xbuf('BUF'+x+'in', 'PROMout'+x)
+    #print 'XoBUF{} BUF{}in PROMout{} VDD BUF'.format(x, x, x)
+  print ".model 1N4148 D"
   print '\n'
 
 def main():
@@ -141,7 +151,39 @@ def main():
     print "CMOS n-bit PROM"
     gen_ands(d)
     gen_ors(map(ord, d), 8) # data "byte" is 8 bits
+
+    bitlen = int(math.ceil(math.log(len(d), 2)))
+    for x in xrange(1, bitlen + 1):
+      print "R{} {} 0 100k".format(x, x)
+
+    for x in xrange(1, 8+1): # 8 bits word + 1
+      print "Rpo{} PROMout{} 0 100k".format(x, x)
+
+    print 'V1 VDD 0 DC 5V'
+
+    print 'L1 kokot ckot 10m'
+    print 'C1 ckot kokot2 10m'
+    print 'C2 ckot 0 22p'
+    print 'Rkkt kokot VDD 250k'
+    xinv('kokot2', 'k2')
+    xinv('k3', 'k4')
+    xinv('k5', 'k6')
+    xinv('k6', 'k7')
+    xinv('k7', 'k8')
+    xinv('k8', 'k9')
+    xinv('k9', 'kokot')
+
+    print ".control"
+    print "tran 1ms 1s"
+    print "plot v(PROMout0), v(PROMout1), v(PROMout2), v(PROMout3), v(PROMout4), v(PROMout5), v(PROMout6), v(PROMout7)"
+    for _xx in xrange(8):
+      print "plot v(PROMout{})".format(_xx)
+    #print "plot "+", ".join(['v(AND'+str(x)+'out)' for x in xrange(len(d))])
+    print "write sim.out"
+    print ".endc"
     print ".end"
+    global trans
+    print>>sys.stderr, "total: ", trans, 'transistors'
     with open(foname, 'w') as fout:
       fout.write(d)
 
